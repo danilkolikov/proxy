@@ -1,2 +1,2 @@
-# proxy
-Proxy Server
+# Proxy Server
+C++-powered lambda-filled Proxy Server
