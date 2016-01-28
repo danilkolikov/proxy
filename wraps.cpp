@@ -16,6 +16,11 @@ file_descriptor::file_descriptor(file_descriptor &&other) : fd() {
     swap(*this, other);
 }
 
+file_descriptor &file_descriptor::operator=(file_descriptor &&other) {
+    swap(*this, other);
+    return *this;
+}
+
 file_descriptor::~file_descriptor() {
     if (fd != 0) {
         close(fd);
@@ -57,6 +62,9 @@ void swap(file_descriptor &first, file_descriptor &second) {
     std::swap(first.fd, second.fd);
 }
 
+std::string to_string(file_descriptor const& fd) {
+    return "file descriptor " + std::to_string(fd.get());
+}
 timer_fd::timer_fd() : file_descriptor() {
 
 }
@@ -217,18 +225,23 @@ int socket_wrap::value_of(std::initializer_list<socket_mode> modes) const {
     return mode;
 }
 
-shared_socket socket_wrap::accept(socket_mode mode) const {
-    return accept({mode});
+socket_wrap socket_wrap::accept(socket_mode mode) const {
+    int new_fd = ::accept4(fd, 0, 0, value_of({mode}));
+    if (new_fd == -1) {
+        int err = errno;
+        throw annotated_exception("accept", err);
+    }
+    return socket_wrap(new_fd);
 }
 
-shared_socket socket_wrap::accept(std::initializer_list<socket_mode> mode) const {
+socket_wrap socket_wrap::accept(std::initializer_list<socket_mode> mode) const {
 
     int new_fd = ::accept4(fd, 0, 0, value_of(mode));
     if (new_fd == -1) {
         int err = errno;
         throw annotated_exception("accept", err);
     }
-    return shared_socket(new socket_wrap(new_fd));
+    return socket_wrap(new_fd);
 }
 
 void socket_wrap::bind(uint16_t port) const {
@@ -276,6 +289,12 @@ void socket_wrap::get_option(int name, void *res, socklen_t *res_len) const {
     }
 }
 
+
+std::string to_string(socket_wrap &wrap) {
+    return "socket " + std::to_string(wrap.get());
+}
+
+
 fd_state::fd_state() :
         fd_st(0) {
 }
@@ -303,15 +322,6 @@ fd_state::fd_state(fd_state &&other) {
 fd_state &fd_state::operator=(fd_state other) {
     swap(*this, other);
     return *this;
-}
-
-fd_state &fd_state::operator|=(fd_state other) {
-    fd_st |= other.get();
-    return *this;
-}
-
-fd_state fd_state::operator|(fd_state other) const {
-    return fd_state(fd_st) |= other;
 }
 
 bool fd_state::operator!=(fd_state other) const {
@@ -388,36 +398,40 @@ epoll_event epoll_wrap::create_event(int fd,
     return event;
 }
 
-void epoll_wrap::register_fd(int fd, fd_state events,
-                             handler_t handler) {
-    epoll_event event = create_event(fd, events | fd_state::RDHUP);
+void epoll_wrap::register_fd(const file_descriptor &fd, fd_state events) {
+    epoll_event event = create_event(fd.get(), events);
 
-    if (epoll_ctl(this->fd, EPOLL_CTL_ADD, fd, &event)) {
+    if (epoll_ctl(this->fd, EPOLL_CTL_ADD, fd.get(), &event)) {
         int err = errno;
         throw annotated_exception("epoll register", err);
     }
-    handlers.insert({fd, handler});
 }
 
-void epoll_wrap::unregister_fd(int fd) {
-    if (epoll_ctl(this->fd, EPOLL_CTL_DEL, fd, 0)) {
+void epoll_wrap::register_fd(const file_descriptor &fd, fd_state events,
+                             handler_t handler) {
+    register_fd(fd, events);
+    handlers.insert({fd.get(), handler});
+}
+
+void epoll_wrap::unregister_fd(const file_descriptor &fd) {
+    if (epoll_ctl(this->fd, EPOLL_CTL_DEL, fd.get(), 0)) {
         int err = errno;
         throw annotated_exception("epoll_unregister", err);
     }
-    handlers.erase(fd);
+    handlers.erase(fd.get());
 }
 
-void epoll_wrap::update_fd(int fd, fd_state events) {
-    epoll_event event = create_event(fd, events | fd_state::RDHUP);
-    if (epoll_ctl(this->fd, EPOLL_CTL_MOD, fd, &event)) {
+void epoll_wrap::update_fd(const file_descriptor &fd, fd_state events) {
+    epoll_event event = create_event(fd.get(), events);
+    if (epoll_ctl(this->fd, EPOLL_CTL_MOD, fd.get(), &event)) {
         int err = errno;
         throw annotated_exception("epoll_update", err);
     }
 }
 
-void epoll_wrap::update_fd_handler(int fd, epoll_wrap::handler_t handler) {
-    handlers.erase(fd);
-    handlers.insert({fd, handler});
+void epoll_wrap::update_fd_handler(const file_descriptor &fd, epoll_wrap::handler_t handler) {
+    handlers.erase(fd.get());
+    handlers.insert({fd.get(), handler});
 }
 
 void epoll_wrap::start_wait() {
@@ -443,7 +457,7 @@ void epoll_wrap::start_wait() {
             handlers_t::iterator it = handlers.find(fd);
             if (it != handlers.end()) {
                 handler_t handler = it->second;
-                handler(fd_state(state), *this);
+                handler(fd_state(state));
             }
             if (stopped) {
                 break;
@@ -467,27 +481,6 @@ void swap(epoll_wrap &first, epoll_wrap &second) {
     swap(first.handlers, second.handlers);
 }
 
-
-endpoint::endpoint() : ip(0), port(0) {
-
-}
-
-endpoint::endpoint(uint32_t ip, uint16_t port) : ip(ip), port(port) {
-
-}
-
-endpoint::endpoint(endpoint const &other) : ip(other.ip), port(other.port) {
-}
-
-endpoint::endpoint(endpoint &&other) {
-    swap(*this, other);
-}
-
-endpoint &endpoint::operator=(endpoint other) {
-    swap(*this, other);
-    return *this;
-}
-
 void swap(endpoint &first, endpoint &second) {
     std::swap(first.ip, second.ip);
     std::swap(first.port, second.port);
@@ -500,25 +493,38 @@ std::string to_string(endpoint const &ep) {
 
 epoll_registration::epoll_registration() : epoll(0), fd(0) { }
 
-epoll_registration::epoll_registration(shared_epoll epoll, file_descriptor const &fd, fd_state state,
-                                       epoll_wrap::handler_t handler) : epoll(epoll), fd(fd.get()), events(state) {
-    epoll->register_fd(this->fd, state, handler);
+epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state) :
+     epoll(&epoll), fd(std::move(fd)), events(state)
+{
+    this->epoll->register_fd(this->fd, state);
+}
+
+epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state,
+                                       epoll_wrap::handler_t handler) : epoll(&epoll), fd(std::move(fd)),
+                                                                        events(state) {
+    this->epoll->register_fd(this->fd, state, handler);
 }
 
 epoll_registration::epoll_registration(epoll_registration &&other) : epoll_registration() {
     swap(*this, other);
 }
 
+epoll_registration &epoll_registration::operator=(epoll_registration &&other) {
+    swap(*this, other);
+    return *this;
+}
+
+
 epoll_registration::~epoll_registration() {
-    if (fd != 0) {
+    if (epoll != 0 && fd.get() != 0) {
         epoll->unregister_fd(fd);
     }
 }
 
 void epoll_registration::update(fd_state state) {
     if (events != state) {
-        epoll->update_fd(fd, state);
         events = state;
+        epoll->update_fd(fd, state);
     }
 }
 
@@ -531,7 +537,11 @@ void epoll_registration::update(fd_state state, epoll_wrap::handler_t handler) {
     update(handler);
 }
 
-int epoll_registration::get() const {
+file_descriptor &epoll_registration::get_fd() {
+    return fd;
+}
+
+file_descriptor const &epoll_registration::get_fd() const {
     return fd;
 }
 
@@ -542,3 +552,7 @@ void swap(epoll_registration &first, epoll_registration &other) {
     swap(first.events, other.events);
 }
 
+
+std::string to_string(epoll_registration &er) {
+    return "registration " + er.fd.get();
+}

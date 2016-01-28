@@ -181,8 +181,6 @@ T buffered_message<T>::get_header() const {
     return header;
 }
 
-#include "util.h"
-#include "assert.h"
 
 template<typename T>
 void buffered_message<T>::read_from(file_descriptor const &socket) {
@@ -193,9 +191,10 @@ void buffered_message<T>::read_from(file_descriptor const &socket) {
 
     read_length += read_length_cur;
     std::string message(buffer, read_length);
-
     if (header_length == 0) {
         size_t pos = message.find("\r\n\r\n");
+        if (pos == std::string::npos)
+            pos = message.find("\n\n");
 
         if (pos != std::string::npos) {
             pos += 4; // Skip \r\n\r\n
@@ -236,11 +235,10 @@ void buffered_message<T>::read_from(file_descriptor const &socket) {
     }
 
     if (body_length == INF) {
-        if (message.substr(message.length() - 5).compare("0\r\n\r\n") == 0) {
+        if (message.length() >= 5 && message.substr(message.length() - 5).compare("0\r\n\r\n") == 0) {
             body_length = read;
         }
     }
-
 }
 
 template<typename T>
@@ -248,7 +246,6 @@ void buffered_message<T>::write_to(file_descriptor const &socket) {
     long write_length_cur = socket.write(cache[cur_part].c_str() + write_length,
                                          cache[cur_part].length() - write_length);
     write_length += write_length_cur;
-
     // Next part of cache
     if (write_length == cache[cur_part].length()) {
         write_length = 0;

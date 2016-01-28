@@ -117,13 +117,12 @@ void swap(request_line &first, request_line &second) {
 
 // Response from server
 
-response_line::response_line() : http(""), code(-1), description("") { }
+response_line::response_line() : code(-1), description(""), http("") { }
 
 response_line::response_line(std::string const &line) : response_line() {
     size_t begin = 0;
     size_t end = line.find(' ', begin);
     http = line.substr(begin, end - begin);
-
     // Skip ' '
     begin = end + 1;
     end = line.find(' ', begin);

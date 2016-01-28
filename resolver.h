@@ -13,7 +13,8 @@
 #include <utility>
 #include <signal.h>
 #include <pthread.h>
-
+#include <atomic>
+#include <functional>
 #include "wraps.h"
 
 #include "util.h"
@@ -27,30 +28,27 @@ void swap(resolved_ip<T> &first, resolved_ip<T> &second);
 template<typename T>
 struct resolver;
 
+// Extra passed with ips adress through resolver
 template<typename T>
 struct resolved_ip {
     using ips_t = std::deque<uint32_t>;
     friend struct resolver<T>;
 
     resolved_ip();
-
     resolved_ip(ips_t ips, uint16_t port, T &&extra);
-
-    resolved_ip(resolved_ip<T> const& other);
-
+    resolved_ip(resolved_ip<T> const &other);
     resolved_ip(resolved_ip<T> &&other);
-
-    ~resolved_ip() = default;
 
     resolved_ip<T> &operator=(resolved_ip<T> other);
 
-    size_t get_ip_count() const;
+    ~resolved_ip() = default;
 
+    bool has_ip() const;
     endpoint get_ip() const;
-
     void next_ip();
 
-    T const &get_extra() const;
+    T &get_extra();
+    T const& get_extra() const;
 
     template<typename S>
     friend void swap(resolved_ip<S> &first, resolved_ip<S> &second);
@@ -63,68 +61,76 @@ private:
 
 };
 
+// Safe RAII wrap for threads. Starts in constructor, joins in destructor
+struct thread_wrap {
+    thread_wrap() = default;
 
-// T - type of extra, passed with site url
+    template<class Fn, class... Args>
+    thread_wrap(Fn func, Args... args) : thread(std::forward<Fn>(func), std::forward<Args>(args)...) { };
+    thread_wrap(thread_wrap const &other) = default;
+    thread_wrap(thread_wrap &&other) = default;
+
+    thread_wrap &operator=(thread_wrap const &other) = default;
+    thread_wrap &operator=(thread_wrap &&other) = default;
+
+    ~thread_wrap() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+private:
+    std::thread thread;
+};
+
+// Multi-thread (4 threads) resolver for ip adresses
 template<typename T>
 struct resolver {
     friend struct resolved_ip<T>;
 
     resolver();
-    resolver(shared_event_fd notifier);
-
-    resolver(resolver<T>&& other) = delete;
+    
+    resolver(resolver<T> &&other) = delete;
     resolver(resolver const &other) = delete;
 
-    resolver<T>& operator=(resolver<T>&& other) = delete;
+    resolver<T> &operator=(resolver<T> &&other) = delete;
     resolver &operator=(resolver const &other) = delete;
-
     ~resolver();
 
+    void set_max_cache_size(size_t size);
     void stop();
 
-    void resolve_url(std::string host, T const &extra);
-
-    void resolve_url(std::string host, T &&extra);
-
+    void resolve_host(std::string host, file_descriptor const &notifier, T extra);
     resolved_ip<T> get_ip();
 
 private:
-    static const size_t THREAD_COUNT = 5;
-    static const size_t CACHE_LENGTH = 500;
+    static const size_t THREAD_COUNT = 4;
+    static void main_loop(std::reference_wrapper<resolver> ref);
 
-    struct thread_wrap {
-        thread_wrap() = default;
-
-        thread_wrap(resolver<T> &res, size_t number);
-        ~thread_wrap();
-
-    private:
-        std::thread thread;
-        std::mutex mutex;
+    struct in_query {
+        std::string host;
+        file_descriptor const *notifier;
+        T extra;
     };
 
-    using in_query = std::pair<std::string, T>;
     using ips_t = typename resolved_ip<T>::ips_t;
     using cached_ip = std::pair<std::string, ips_t>;
-    using unique_thread = std::unique_ptr<thread_wrap>;
 
     ips_t find_cached(std::string const &host);
-
     void cache_ip(std::string const &host, ips_t ips);
 
     ips_t resolve_ip(std::string host, std::string port);
 
-    shared_event_fd notifier;
-    bool volatile should_stop;
-
-    std::deque<cached_ip> cache;
-
     std::queue<in_query> in_queue;
     std::queue<resolved_ip<T>> out_queue;
 
+    size_t max_cache_size;
+    std::deque<cached_ip> cache;
+
+    std::atomic_bool should_stop;
     std::mutex in_mutex, out_mutex, cache_mutex;
     std::condition_variable cv;
-    unique_thread threads[THREAD_COUNT];
+    thread_wrap threads[THREAD_COUNT];
 };
 
 template<typename T>
@@ -147,7 +153,7 @@ void swap(resolved_ip<T> &first, resolved_ip<T> &other) {
 }
 
 template<typename T>
-resolved_ip<T>::resolved_ip(resolved_ip<T> const& other) : ips(other.ips), extra(other.extra) {
+resolved_ip<T>::resolved_ip(resolved_ip<T> const &other) : ips(other.ips), extra(other.extra) {
 }
 
 template<typename T>
@@ -162,8 +168,8 @@ resolved_ip<T> &resolved_ip<T>::operator=(resolved_ip<T> other) {
 }
 
 template<typename T>
-size_t resolved_ip<T>::get_ip_count() const {
-    return ips.size();
+bool resolved_ip<T>::has_ip() const {
+    return !ips.empty();
 }
 
 template<typename T>
@@ -173,7 +179,7 @@ endpoint resolved_ip<T>::get_ip() const {
     }
     uint32_t ip = *ips.begin();
 
-    return endpoint(ip, port);
+    return {ip, port};
 }
 
 template<typename T>
@@ -185,88 +191,18 @@ void resolved_ip<T>::next_ip() {
 }
 
 template<typename T>
-T const &resolved_ip<T>::get_extra() const {
+T &resolved_ip<T>::get_extra() {
     return extra;
 }
 
 template<typename T>
-resolver<T>::thread_wrap::thread_wrap(resolver<T> &res, size_t number) {
-    thread = std::thread([this, &res, number](int) mutable {
-        while (true) {
-            std::unique_lock<std::mutex> lock(mutex);
-            if (res.should_stop) {
-                break;
-            }
-
-            bool queue_is_empty;
-
-            {
-                std::lock_guard<std::mutex> lg(res.in_mutex);
-                queue_is_empty = res.in_queue.empty();
-            }
-
-
-            if (queue_is_empty) {
-                res.cv.wait(lock);
-                continue;
-            }
-
-            in_query p;
-            {
-                std::lock_guard<std::mutex> lg(res.in_mutex);
-                if (res.in_queue.size() == 0) {
-                    continue;
-                }
-                p = std::move(res.in_queue.front());
-                res.in_queue.pop();
-            }
-
-            size_t pos = p.first.find(":");
-            std::string host, port;
-            if (pos == std::string::npos) {
-                host = p.first;
-                port = "80";
-            } else {
-                host = p.first.substr(0, pos);
-                port = p.first.substr(pos + 1);
-            }
-
-            ips_t ips = res.find_cached(host);
-
-            if (ips.empty()) {
-                try {
-                    ips = res.resolve_ip(host, port);
-                } catch (annotated_exception const& e) {
-                    log(e);
-                    ips = ips_t();
-                }
-            }
-            resolved_ip<T> tmp(ips, htons(std::stoi(port)), std::move(p.second));
-
-            {
-                std::lock_guard<std::mutex> lg(res.out_mutex);
-                res.out_queue.push(std::move(tmp));
-            }
-            uint64_t u = 1;
-            res.notifier->write(&u, sizeof(uint64_t));
-        }
-    }, 0);
+T const &resolved_ip<T>::get_extra() const {
+    return extra;
 }
 
-template<typename T>
-resolver<T>::thread_wrap::~thread_wrap() {
-    if (thread.joinable()) {
-        thread.join();
-    }
-}
 
 template<typename T>
-resolver<T>::resolver() : notifier(0), should_stop(false) {
-}
-
-template<typename T>
-resolver<T>::resolver(shared_event_fd notifier) :
-        notifier(notifier), should_stop(false) {
+resolver<T>::resolver() : max_cache_size(500), should_stop(false)  {
     // Ignoring signals from other threads
     sigset_t set;
     sigemptyset(&set);
@@ -274,7 +210,7 @@ resolver<T>::resolver(shared_event_fd notifier) :
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
     for (size_t i = 0; i < THREAD_COUNT; i++) {
-        threads[i] = unique_thread(new thread_wrap(*this, i));
+        threads[i] = thread_wrap(resolver<T>::main_loop, std::ref(*this));
     }
 
     // Don't ignore in main thread
@@ -290,25 +226,19 @@ resolver<T>::~resolver() {
 template<typename T>
 void resolver<T>::stop() {
     should_stop = true;
-    for (size_t i = 0; i < THREAD_COUNT; i++) {
-        cv.notify_one();
-    }
+    cv.notify_all();
 }
 
 template<typename T>
-void resolver<T>::resolve_url(std::string url, T const &extra) {
-    {
-        std::lock_guard<std::mutex> lg(in_mutex);
-        in_queue.push(resolver::in_query(url, extra));
-    }
-    cv.notify_one();
+void resolver<T>::set_max_cache_size(size_t size) {
+    max_cache_size = size;
 }
 
 template<typename T>
-void resolver<T>::resolve_url(std::string url, T &&extra) {
+void resolver<T>::resolve_host(std::string host, file_descriptor const &notifier, T extra) {
     {
         std::lock_guard<std::mutex> lg(in_mutex);
-        in_queue.push(resolver::in_query(url, extra));
+        in_queue.push({host, &notifier, std::move(extra)});
     }
     cv.notify_one();
 }
@@ -339,7 +269,7 @@ template<typename T>
 void resolver<T>::cache_ip(std::string const &host, typename resolver<T>::ips_t ip) {
     std::lock_guard<std::mutex> lg(cache_mutex);
     cache.push_front({host, ip});
-    if (cache.size() > CACHE_LENGTH) {
+    if (cache.size() > max_cache_size) {
         cache.pop_back();
     }
 }
@@ -354,7 +284,7 @@ typename resolver<T>::ips_t resolver<T>::resolve_ip(std::string host, std::strin
     int code;
     struct addrinfo *addr;
     if ((code = getaddrinfo(host.c_str(), port.c_str(), &hints, &addr)) != 0) {
-        throw annotated_exception("getaddrinfo", gai_strerror(code));
+        throw annotated_exception("resolver", gai_strerror(code));
     }
     ips_t ips;
     struct addrinfo *cur = addr;
@@ -366,6 +296,62 @@ typename resolver<T>::ips_t resolver<T>::resolve_ip(std::string host, std::strin
     freeaddrinfo(addr);
     cache_ip(host, ips);
     return ips;
+}
+
+template<typename T>
+void resolver<T>::main_loop(std::reference_wrapper<resolver<T>> ref) {
+    while (true) {
+        if (ref.get().should_stop) {
+            break;
+        }
+        {
+            std::unique_lock<std::mutex> lock(ref.get().in_mutex);
+
+            if (ref.get().in_queue.empty()) {
+                ref.get().cv.wait(lock);
+                continue;
+            }
+        }
+
+        in_query p{};
+        {
+            std::lock_guard<std::mutex> lg(ref.get().in_mutex);
+            if (ref.get().in_queue.size() == 0) {
+                continue;
+            }
+            p = std::move(ref.get().in_queue.front());
+            ref.get().in_queue.pop();
+        }
+
+        size_t pos = p.host.find(":");
+        std::string host, port;
+        if (pos == std::string::npos) {
+            host = p.host;
+            port = "80";
+        } else {
+            host = p.host.substr(0, pos);
+            port = p.host.substr(pos + 1);
+        }
+
+        ips_t ips = ref.get().find_cached(host);
+
+        if (ips.empty()) {
+            try {
+                ips = ref.get().resolve_ip(host, port);
+            } catch (annotated_exception const &e) {
+                log(e);
+                ips = ips_t();
+            }
+        }
+        resolved_ip<T> tmp(ips, htons(std::stoi(port)), std::move(p.extra));
+
+        {
+            std::lock_guard<std::mutex> lg(ref.get().out_mutex);
+            ref.get().out_queue.push(std::move(tmp));
+        }
+        uint64_t u = 1;
+        p.notifier->write(&u, sizeof(uint64_t));
+    }
 }
 
 #endif /* RESOLVER_H_ */

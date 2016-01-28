@@ -30,7 +30,7 @@ private:
     int errnum;
 };
 
-inline std::string to_string(std::string message) {
+inline std::string to_string(std::string const& message) {
     return message;
 }
 
@@ -39,7 +39,7 @@ inline std::string to_string(char* message) {
 }
 
 template <typename S, typename T>
-void log(S tag, T message) {
+void log(S const& tag, T const & message) {
     using ::to_string;
     using std::to_string;
     std::cout << to_string(tag) << ": " << to_string(message) << '\n';
