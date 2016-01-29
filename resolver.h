@@ -66,7 +66,7 @@ struct thread_wrap {
     thread_wrap() = default;
 
     template<class Fn, class... Args>
-    thread_wrap(Fn func, Args&&... args) : thread(std::forward<Fn>(func), std::forward<Args>(args)...) { };
+    thread_wrap(Fn&& func, Args&&... args) : thread(std::forward<Fn>(func), std::forward<Args>(args)...) { };
     thread_wrap(thread_wrap const &other) = default;
     thread_wrap(thread_wrap &&other) = default;
 
