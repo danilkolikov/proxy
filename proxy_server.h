@@ -33,7 +33,7 @@ private:
     // Connection between two epoll_registrations (with timeout)
     struct connection {
         connection();
-        connection(epoll_registration client, epoll_registration server,
+        connection(epoll_registration&& client, epoll_registration&& server,
                    size_t timeout, size_t ticks);
         connection(connection &&other) = default;
         connection &operator=(connection &&other) = default;
@@ -61,12 +61,15 @@ private:
         size_t expires_in;
 
         safe_registration();
-        safe_registration(epoll_registration registration, size_t timeout, size_t cur_ticks);
+        safe_registration(epoll_registration&& registration, size_t timeout, size_t cur_ticks);
         safe_registration(safe_registration &&other);
         safe_registration &operator=(safe_registration &&other);
+
+        friend std::string to_string(safe_registration const& reg);
     };
 
     friend void swap(safe_registration &first, safe_registration &second);
+    friend std::string to_string(safe_registration const& reg);
 
     // Types of used containers
     using cache_t = std::map<std::string, cached_message>;
@@ -116,6 +119,12 @@ private:
     // Send response and save to cache if it's possible
     void send_server_response(connections_t::iterator conn, client_request rqst, server_response);
 
+    // Send 404 bad request
+    void send_404(sockets_t::iterator client);
+
+    // Get client from broken connection
+    sockets_t::iterator escape_client(connections_t::iterator conn);
+
     // Default actions
     // Connect to host from header
     action_with_request first_request_read(sockets_t::iterator client);
@@ -133,11 +142,13 @@ private:
     void close(sockets_t::iterator socket);
     void change_timeout(sockets_t::iterator, size_t socket_timeout);
     void set_active(sockets_t::iterator iterator);
+    friend std::string to_string(sockets_t::iterator const &iterator);
 
     connections_t::iterator save_connection(connection conn);
     void change_timeout(connections_t::iterator, size_t socket_timeout);
     void close(connections_t::iterator socket);
     void set_active(connections_t::iterator iterator);
+    friend std::string to_string(connections_t::iterator const &iterator);
 
     // Caching
     bool sholud_cache(response_header const &header) const;
@@ -160,7 +171,6 @@ private:
     sockets_t::iterator listener;
     sockets_t::iterator notifier;
     sockets_t::iterator timer;
-
 };
 
 

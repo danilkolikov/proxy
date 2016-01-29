@@ -18,7 +18,7 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
 
             log("new client accepted", client.get());
             sockets_t::iterator it = save_registration(epoll_registration(epoll, std::move(client), fd_state::IN),
-                                                       LONG_SOCKET_TIMEOUT);
+                                                       SHORT_SOCKET_TIMEOUT);
             read(it->second, client_request(), it, first_request_read(it));
         }
     };
@@ -37,7 +37,15 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
             sockets_t::iterator client = sockets.find(ip.get_extra().socket);
             if (it == on_resolve.end()) {
                 // Client disconnected during resolving of ip
-                log("client " + std::to_string(ip.get_extra().socket), "Client disconnected during resolving of ip");
+                log(client, "client disconnected during resolving of ip");
+                return;
+            }
+
+            if (!ip.has_ip()) {
+                log(client,
+                    "address " + ip.get_extra().host + " not found");
+                on_resolve.erase(it);
+                send_404(client);
                 return;
             }
 
@@ -46,7 +54,7 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
             } catch (annotated_exception const &e) {
                 if (e.get_errno() != EINPROGRESS) {
                     log(e);
-                    sockets.erase(client);
+                    send_404(client);
                     on_resolve.erase(it);
                     return;
                 }
@@ -66,7 +74,7 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
                             [this, it, conn_it](fd_state state) {
                                 // If client disconnect while we haven't connected to server
                                 if (state.is(fd_state::RDHUP)) {
-                                    log(*conn_it, "client dropped connection");
+                                    log(conn_it, "client dropped connection");
                                     on_resolve.erase(it);
                                     close(conn_it);
                                 }
@@ -85,7 +93,7 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
             ticks += ticked * TICK_INTERVAL;
             for (auto it = sockets.begin(); it != sockets.end();) {
                 if (it->second.expires_in <= ticks) {
-                    log(it->second.get_fd(), "closed due timeout");
+                    log(it, "closed due timeout");
                     it = sockets.erase(it);
                 } else {
                     it++;
@@ -95,7 +103,7 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
             ticks += ticked;
             for (auto it = connections.begin(); it != connections.end();) {
                 if (it->expires_in <= ticks) {
-                    log(*it, "closed due timeout");
+                    log(it, "closed due timeout");
                     it = connections.erase(it);
                 } else {
                     it++;
@@ -115,7 +123,6 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
 
 proxy_server::action_with_request proxy_server::first_request_read(sockets_t::iterator client) {
     return [this, client](client_request rqst) {
-
         std::string host = rqst.get_header().get_property("host");
         connect_to_server(client, host, handle_client_request(rqst));
     };
@@ -124,13 +131,13 @@ proxy_server::action_with_request proxy_server::first_request_read(sockets_t::it
 
 void proxy_server::connect_to_server(sockets_t::iterator sock, std::string host, action_with_connection do_next) {
     socket_wrap &s = *static_cast<socket_wrap *>(&sock->second.get_fd());
-    log(s, "establishing connection to " + host);
+    log(sock, "establishing connection to " + host);
     on_resolve.insert({{s.get(), host}, do_next});
 
     // If socket disconnected during resolving, stop resolving
     sock->second.update(fd_state::RDHUP, [this, sock, host](fd_state state) {
         if (state.is(fd_state::RDHUP)) {
-            log(sock->second.get_fd(), "disconnected during resolving of IP");
+            log(sock, "disconnected during resolving of IP");
             on_resolve.erase(on_resolve.find({sock->second.get_fd().get(), host}));
             close(sock);
         }
@@ -145,7 +152,7 @@ proxy_server::action_with_connection proxy_server::handle_client_request(client_
 
             // If cached, validate
             if (is_cached(rqst.get_header())) {
-                log(*conn, "found cached for " + to_url(rqst.get_header()) + ", validating...");
+                log(conn, "found cached for " + to_url(rqst.get_header()) + ", validating...");
 
                 server_response cached = get_cached(rqst.get_header());
                 send_and_read(conn->get_server_registration(),
@@ -166,7 +173,7 @@ proxy_server::action_with_response proxy_server::handle_validation_response(conn
 
         if (code == 200 || code == 304) {
             // Can send cached
-            log(*conn, "cache valid");
+            log(conn, "cache valid");
             if (resp.get_header().has_property("connnection")) {
                 cached.get_header().set_property("connection", resp.get_header().get_property("connection"));
             }
@@ -174,7 +181,7 @@ proxy_server::action_with_response proxy_server::handle_validation_response(conn
             send_server_response(conn, std::move(rqst), std::move(cached));
         } else {
             // Can't do it
-            log(*conn, "cache invalid");
+            log(conn, "cache invalid");
 
             delete_cached(rqst.get_header());
 
@@ -182,7 +189,7 @@ proxy_server::action_with_response proxy_server::handle_validation_response(conn
             if (resp.get_header().has_property("connection") &&
                 to_lower(resp.get_header().get_property("connection")).compare("close") == 0) {
                 // Re-connect if closed
-                log(*conn, "server closed due to \"Connection = close\", reconnecting");
+                log(conn, "server closed due to \"Connection = close\", reconnecting");
                 epoll_registration client = std::move(conn->get_client_registration());
                 close(conn);
                 sockets_t::iterator it = save_registration(std::move(client), LONG_SOCKET_TIMEOUT);
@@ -202,34 +209,32 @@ proxy_server::action_with_response proxy_server::handle_validation_response(conn
 
 proxy_server::action proxy_server::reuse_connection(connections_t::iterator conn, std::string old_host) {
     return [this, conn, old_host]() {
-        log(*conn, "server response sent");
-        log(*conn, "kept alive");
+        log(conn, "server response sent");
+        log(conn, "kept alive");
 
         conn->get_server_registration().update(fd_state::RDHUP, [this, conn](fd_state state) {
             // It's a rare situation when server that keeps connection alive drops it
+            // As proxy should be transparent to client, we should drop connection too
             if (state.is(fd_state::RDHUP)) {
-                log(*conn, "server dropped connection");
-                epoll_registration client = std::move(conn->get_client_registration());
+                log(conn, "server dropped connection");
                 close(conn);
-
-                sockets_t::iterator it = save_registration(std::move(client), LONG_SOCKET_TIMEOUT);
-                read(it->second, client_request(), it, first_request_read(it));
+                return;
             }
         });
 
         // Read client request
-        read < request_header, connections_t::iterator > (conn->get_client_registration(), client_request(), conn,
+        read < request_header > (conn->get_client_registration(), client_request(), conn,
                 [this, conn, old_host](client_request rqst) {
 
                     std::string host = rqst.get_header().get_property("host");
-                    log(*conn, "client reused: " + old_host + " -> " + host);
+                    log(conn, "client reused: " + old_host + " -> " + host);
 
                     if (host.compare(old_host) == 0) {
                         // If host the same, send request
                         handle_client_request(std::move(rqst))(conn);
                     } else {
                         // Otherwise, disconnect, connect and send
-                        log(*conn, "disconnect from " + old_host);
+                        log(conn, "disconnect from " + old_host);
                         epoll_registration client = std::move(conn->get_client_registration());
                         close(conn);
 
@@ -249,9 +254,10 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
         set_active(conn);
 
         if (state.is(fd_state::RDHUP)) {
-            log(*conn, "connection to " + ip.get_extra().host +
-                       ": server " + std::to_string(server.get()) + "dropped connection");
+            log(conn, "connection to " + ip.get_extra().host +
+                      ": server " + std::to_string(server.get()) + "dropped connection");
             on_resolve.erase(query);
+            send_404(escape_client(conn));
             close(conn);
             return;
         }
@@ -266,15 +272,16 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
                 case ENETUNREACH:
                 case ECONNREFUSED: {
                     if (!ip.has_ip()) {
-                        log(*conn, "connection to " + ip.get_extra().host + ": no relevant ip, closing");
+                        log(conn, "connection to " + ip.get_extra().host + ": no relevant ip, closing");
                         on_resolve.erase(query);
+                        send_404(escape_client(conn));
                         close(conn);
                         return;
                     }
                     endpoint old_ip = ip.get_ip();
                     ip.next_ip();
-                    log(*conn, "connection to " + ip.get_extra().host + ": ip "
-                               + to_string(old_ip) + " isn't valid. Trying " + to_string(ip.get_ip()));
+                    log(conn, "connection to " + ip.get_extra().host + ": ip "
+                              + to_string(old_ip) + " isn't valid. Trying " + to_string(ip.get_ip()));
                     endpoint cur_ip = ip.get_ip();
 
                     try {
@@ -283,8 +290,9 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
                         if (e.get_errno() != EINPROGRESS) {
                             // bad error
                             log(e);
-                            log(*conn, "closing");
+                            log(conn, "closing");
                             on_resolve.erase(query);
+                            send_404(escape_client(conn));
                             close(conn);
                             return;
                         }
@@ -293,7 +301,9 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
                 }
                 case EPIPE:
                     log(e);
+                    log(conn, "closing");
                     on_resolve.erase(query);
+                    send_404(escape_client(conn));
                     close(conn);
                     return;
             }
@@ -301,7 +311,7 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
         }
 
         if (state.is(fd_state::OUT)) {
-            log(*conn, "established");
+            log(conn, "established");
 
             action_with_connection action = query->second;
             on_resolve.erase(query);
@@ -315,6 +325,11 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
     };
 }
 
+typename proxy_server::sockets_t::iterator proxy_server::escape_client(connections_t::iterator conn) {
+    epoll_registration client = std::move(conn->get_client_registration());
+    return save_registration(std::move(client), SHORT_SOCKET_TIMEOUT);
+}
+
 template<typename T, typename C>
 void proxy_server::read(epoll_registration &from, buffered_message<T> message,
                         C iterator, action_with<buffered_message<T>> next) {
@@ -326,7 +341,7 @@ void proxy_server::read(epoll_registration &from, buffered_message<T> message,
 
                     if (state.is(fd_state::RDHUP)) {
                         if (fd.can_read() == 0) {
-                            log(fd, "disconnected");
+                            log(iterator, "disconnected");
                             close(iterator);
                             return;
                         }
@@ -337,7 +352,7 @@ void proxy_server::read(epoll_registration &from, buffered_message<T> message,
                         socklen_t size = sizeof(code);
                         socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                         sock.get_option(SO_ERROR, &code, &size);
-                        annotated_exception exception(to_string(sock) + " read", code);
+                        annotated_exception exception(to_string(iterator) + " read", code);
                         switch (code) {
                             case ECONNRESET:
                             case EPIPE:
@@ -372,7 +387,7 @@ void proxy_server::send(epoll_registration &to, buffered_message<T> message,
                   set_active(iterator);
 
                   if (state.is(fd_state::RDHUP)) {
-                      log(fd, "disconnected");
+                      log(iterator, "disconnected");
                       close(iterator);
                       return;
                   }
@@ -382,7 +397,7 @@ void proxy_server::send(epoll_registration &to, buffered_message<T> message,
                       socklen_t size = sizeof(code);
                       socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                       sock.get_option(SO_ERROR, &code, &size);
-                      annotated_exception exception(to_string(sock) + " send", code);
+                      annotated_exception exception(to_string(iterator) + " send", code);
                       switch (code) {
                           case ECONNRESET:
                           case EPIPE:
@@ -410,20 +425,19 @@ template<typename C>
 void proxy_server::send_and_read(epoll_registration &to, client_request rqst,
                                  C iterator, action_with_response next) {
     send(to, rqst, iterator, [this, &to, iterator, next]() {
-        log(*iterator, "request sent");
+        log(iterator, "request sent");
         read(to, server_response(), iterator, next);
     });
 }
 
 void proxy_server::send_server_response(connections_t::iterator conn, client_request rqst, server_response resp) {
-    log(*conn, "server's response read");
+    log(conn, "server's response read");
     bool closed = resp.get_header().has_property("connection") &&
                   to_lower(resp.get_header().get_property("connection")).compare("close") == 0;
 
     if (closed) {
-        log(*conn, "server closed due to \"Connection = close\" ");
-        epoll_registration client = std::move(conn->get_client_registration());
-        sockets_t::iterator it = save_registration(std::move(client), LONG_SOCKET_TIMEOUT);
+        log(conn, "server closed due to \"Connection = close\" ");
+        sockets_t::iterator it = escape_client(conn);
         close(conn);
 
         send(it->second, resp, it, [this, it]() {
@@ -439,6 +453,15 @@ void proxy_server::send_server_response(connections_t::iterator conn, client_req
 
 }
 
+void proxy_server::send_404(sockets_t::iterator client) {
+    response_header header(response_line(404, "Not Found"));
+
+    server_response response(std::move(header), "");
+    send(client->second, std::move(response), client, [this, client](){
+        close(client);
+    });
+}
+
 void proxy_server::fast_transfer(connections_t::iterator conn, client_request rqst) {
     send(conn->get_server_registration(), rqst, conn, [this, conn, rqst]() {
         std::shared_ptr<client_request> s_rqst = std::make_shared<client_request>(std::move(rqst));
@@ -451,7 +474,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
 
             if (state.is(fd_state::RDHUP)) {
                 if (server.can_read() == 0) {
-                    log(*conn, "server dropped connection");
+                    log(conn, "server dropped connection");
                     close(conn);
                     return;
                 }
@@ -462,7 +485,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
                 socklen_t size = sizeof(code);
                 socket_wrap const &sock = *static_cast<socket_wrap const *>(&server);
                 sock.get_option(SO_ERROR, &code, &size);
-                annotated_exception exception(to_string(sock) + " send", code);
+                annotated_exception exception(to_string(conn) + " send", code);
                 switch (code) {
                     case ECONNRESET:
                     case EPIPE:
@@ -486,7 +509,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
                     std::string url = to_url(s_rqst->get_header());
                     if (sholud_cache(resp->get_header())) {
                         save_cached(url, resp->get_cache());
-                        log(*conn, "response from " + url + " saved to cache");
+                        log(conn, "response from " + url + " saved to cache");
                     }
 
                     send_server_response(conn, std::move(*s_rqst), std::move(*resp));
@@ -499,7 +522,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
             set_active(conn);
 
             if (state.is(fd_state::RDHUP)) {
-                log(*conn, "client dropped connection");
+                log(conn, "client dropped connection");
                 close(conn);
                 return;
             }
@@ -509,7 +532,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
                 socklen_t size = sizeof(code);
                 socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                 sock.get_option(SO_ERROR, &code, &size);
-                annotated_exception exception(to_string(sock) + " send", code);
+                annotated_exception exception(to_string(conn) + " send", code);
                 switch (code) {
                     case ECONNRESET:
                     case EPIPE:
@@ -553,6 +576,10 @@ void proxy_server::close(sockets_t::iterator socket) {
     sockets.erase(socket);
 }
 
+std::string to_string(proxy_server::sockets_t::iterator const &iterator) {
+    return to_string(iterator->second);
+}
+
 
 proxy_server::connections_t::iterator proxy_server::save_connection(connection conn) {
     return connections.insert(connections.end(), std::move(conn));
@@ -570,6 +597,9 @@ void proxy_server::close(connections_t::iterator connection) {
     connections.erase(connection);
 }
 
+std::string to_string(proxy_server::connections_t::iterator const &iterator) {
+    return to_string(*iterator);
+}
 
 std::string proxy_server::to_url(request_header const &request) const {
     std::string url = request.get_property("host");
@@ -646,7 +676,7 @@ client_request proxy_server::make_validate_request(request_header rqst, response
 
 proxy_server::connection::connection() : timeout(0), expires_in(0) { }
 
-proxy_server::connection::connection(epoll_registration client, epoll_registration server, size_t timeout,
+proxy_server::connection::connection(epoll_registration&& client, epoll_registration&& server, size_t timeout,
                                      size_t ticks) :
         timeout(timeout), expires_in(ticks + timeout), client(std::move(client)), server(std::move(server)) { }
 
@@ -686,7 +716,7 @@ std::string to_string(proxy_server::connection const &conn) {
 proxy_server::safe_registration::safe_registration() : epoll_registration(), timeout(0), expires_in(0) {
 }
 
-proxy_server::safe_registration::safe_registration(epoll_registration registration, size_t timeout, size_t ticks) :
+proxy_server::safe_registration::safe_registration(epoll_registration&& registration, size_t timeout, size_t ticks) :
         epoll_registration(std::move(registration)), timeout(timeout), expires_in(ticks + timeout) {
 }
 
@@ -707,3 +737,7 @@ void swap(proxy_server::safe_registration &first, proxy_server::safe_registratio
     swap(first.expires_in, second.expires_in);
 }
 
+
+std::string to_string(const proxy_server::safe_registration &reg) {
+    return "client " + std::to_string(reg.get_fd().get());
+}

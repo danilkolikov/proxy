@@ -54,6 +54,22 @@ void swap(header_property &first, header_property &second) {
 
 request_line::request_line() : type(""), url(""), http("") { }
 
+request_line::request_line(request_type type, std::string url) : url(url), http("HTTP/1.1"){
+    switch (type) {
+        case GET:
+            this->type = "GET";
+            break;
+        case POST:
+            this->type = "POST";
+            break;
+        case OPTION:
+            this->type = "OPTION";
+        case CONNECT:
+            this->type = "CONNECT";
+            break;
+    }
+}
+
 request_line::request_line(std::string const &line) {
     size_t begin = 0;
     size_t end = line.find(' ', begin);
@@ -118,6 +134,9 @@ void swap(request_line &first, request_line &second) {
 // Response from server
 
 response_line::response_line() : code(-1), description(""), http("") { }
+
+response_line::response_line(int code, std::string description) : code(code), description(description),
+http("HTTP/1.1"){ }
 
 response_line::response_line(std::string const &line) : response_line() {
     size_t begin = 0;

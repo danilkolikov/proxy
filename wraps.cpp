@@ -493,13 +493,13 @@ std::string to_string(endpoint const &ep) {
 
 epoll_registration::epoll_registration() : epoll(0), fd(0) { }
 
-epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state) :
+epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor&& fd, fd_state state) :
      epoll(&epoll), fd(std::move(fd)), events(state)
 {
     this->epoll->register_fd(this->fd, state);
 }
 
-epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state,
+epoll_registration::epoll_registration(epoll_wrap &epoll, file_descriptor&& fd, fd_state state,
                                        epoll_wrap::handler_t handler) : epoll(&epoll), fd(std::move(fd)),
                                                                         events(state) {
     this->epoll->register_fd(this->fd, state, handler);

@@ -44,6 +44,7 @@ public:
     void set_property(std::string name, std::string value);
     void erase_property(std::string name);
 
+    void set_request_line(Line line);
     Line get_request_line() const;
     Line &get_request_line();
 
@@ -65,6 +66,7 @@ struct request_line {
     };
 
     request_line();
+    request_line(request_type type, std::string url);
     explicit request_line(std::string const &message);
     request_line(request_line const &other);
     request_line(request_line &&other);
@@ -85,6 +87,8 @@ private:
 struct response_line {
     response_line();
     explicit response_line(std::string const &message);
+    response_line(int code, std::string description);
+
     response_line(response_line const &other);
     response_line(response_line &&other);
     response_line &operator=(response_line other);
@@ -209,6 +213,11 @@ void http_header<Line>::erase_property(std::string name) {
             return;
         }
     }
+}
+
+template <typename Line>
+void http_header<Line>::set_request_line(Line line) {
+    this->request_line = std::move(line);
 }
 
 template<typename Line>

@@ -38,10 +38,9 @@ struct file_descriptor {
     long write(void const *message, size_t message_size) const;
 
     friend void swap(file_descriptor &first, file_descriptor &second);
-    friend std::string to_string(file_descriptor const& fd);
+    friend std::string to_string(file_descriptor const &fd);
 protected:
     file_descriptor();
-
     int fd;
 };
 
@@ -108,7 +107,7 @@ struct socket_wrap : file_descriptor {
     void listen(int queue_size) const;
     void get_option(int name, void *res, socklen_t *res_len) const;
 
-    friend std::string to_string(socket_wrap& wrap);
+    friend std::string to_string(socket_wrap &wrap);
 protected:
     socket_wrap();
     explicit socket_wrap(int fd);
@@ -174,15 +173,15 @@ using shared_epoll = std::shared_ptr<epoll_wrap>;
 // RAII-struct for registration in epoll
 struct epoll_registration {
     epoll_registration();
-    epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state);
-    epoll_registration(epoll_wrap &epoll, file_descriptor fd, fd_state state, epoll_wrap::handler_t handler);
+    epoll_registration(epoll_wrap &epoll, file_descriptor &&fd, fd_state state);
+    epoll_registration(epoll_wrap &epoll, file_descriptor &&fd, fd_state state, epoll_wrap::handler_t handler);
     epoll_registration(epoll_registration &&other);
     epoll_registration &operator=(epoll_registration &&other);
 
     ~epoll_registration();
 
-    file_descriptor& get_fd();
-    file_descriptor const& get_fd() const;
+    file_descriptor &get_fd();
+    file_descriptor const &get_fd() const;
 
     fd_state get_state() const;
     void update(fd_state state);
@@ -190,7 +189,7 @@ struct epoll_registration {
     void update(fd_state state, epoll_wrap::handler_t handler);
 
     friend void swap(epoll_registration &frist, epoll_registration &other);
-    friend std::string to_string(epoll_registration& er);
+    friend std::string to_string(epoll_registration &er);
 private:
     epoll_wrap *epoll; // It's here because of epoll_registration should be move-constructable
     file_descriptor fd;
@@ -202,8 +201,8 @@ struct endpoint {
     uint32_t ip;
     uint16_t port;
 
-    friend void swap(endpoint &first, endpoint &second);
-    friend std::string to_string(endpoint const &ep);
 };
+void swap(endpoint &first, endpoint &second);
+std::string to_string(endpoint const &ep);
 
 #endif /* WRAPS_H_ */
