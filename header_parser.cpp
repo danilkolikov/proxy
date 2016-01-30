@@ -110,6 +110,9 @@ request_line::request_type request_line::get_type() const {
     if (type.compare("POST") == 0) {
         return POST;
     }
+    if (type.compare("CONNECT") == 0) {
+        return CONNECT;
+    }
     return GET;
 }
 

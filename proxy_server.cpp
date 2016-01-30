@@ -14,12 +14,17 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
     epoll_wrap::handler_t listener_handler = [this](fd_state state) {
         if (state.is(fd_state::IN)) {
             socket_wrap &listener = *static_cast<socket_wrap *>(&this->listener->second.get_fd());
-            socket_wrap client = listener.accept(socket_wrap::NONBLOCK);
+            try {
+                socket_wrap client = listener.accept(socket_wrap::NONBLOCK);
 
-            log("new client accepted", client.get());
-            sockets_t::iterator it = save_registration(epoll_registration(epoll, std::move(client), fd_state::IN),
-                                                       SHORT_SOCKET_TIMEOUT);
-            read(it->second, client_request(), it, first_request_read(it));
+                log("new client accepted", client.get());
+                sockets_t::iterator it = save_registration(epoll_registration(epoll, std::move(client), fd_state::IN),
+                                                           SHORT_SOCKET_TIMEOUT);
+                read(it->second, client_request(), it, first_request_read(it));
+            } catch (annotated_exception const& e) {
+                log("accept failed", e.what());
+                return;
+            }
         }
     };
 
@@ -161,6 +166,11 @@ proxy_server::action_with_connection proxy_server::handle_client_request(client_
                 return;
             }
         }
+        if (rqst.get_header().get_request_line().get_type() == request_line::CONNECT) {
+            server_response resp(response_header(response_line(200, "Connection Established")), "");
+            send(conn->get_client_registration(), resp, conn, handle_connect(conn));
+            return;
+        }
         fast_transfer(conn, rqst);
     };
 }
@@ -230,7 +240,7 @@ proxy_server::action proxy_server::reuse_connection(connections_t::iterator conn
                     log(conn, "client reused: " + old_host + " -> " + host);
 
                     if (host.compare(old_host) == 0) {
-                        // If host the same, send request
+                        // If host the same, handle request
                         handle_client_request(std::move(rqst))(conn);
                     } else {
                         // Otherwise, disconnect, connect and send
@@ -246,6 +256,67 @@ proxy_server::action proxy_server::reuse_connection(connections_t::iterator conn
     };
 }
 
+proxy_server::action proxy_server::handle_connect(connections_t::iterator conn) {
+    return [this, conn]() {
+        log(conn, "CONNECT started");
+        std::shared_ptr<raw_message> client_message = std::make_shared<raw_message>();
+        std::shared_ptr<raw_message> server_message = std::make_shared<raw_message>();
+        conn->get_server_registration()
+                .update({fd_state::RDHUP, fd_state::IN, fd_state::OUT},
+                        make_connect_transfer_handler(conn->get_server_registration(), server_message,
+                                                      conn->get_client_registration(), client_message, conn));
+        conn->get_client_registration()
+                .update({fd_state::RDHUP, fd_state::IN, fd_state::OUT},
+                        make_connect_transfer_handler(conn->get_client_registration(), client_message,
+                                                      conn->get_server_registration(), server_message, conn));
+    };
+}
+
+epoll_wrap::handler_t proxy_server::make_connect_transfer_handler(epoll_registration &in,
+                                                                  std::shared_ptr<raw_message> in_message,
+                                                                  epoll_registration &out,
+                                                                  std::shared_ptr<raw_message> out_message,
+                                                                  std::list<proxy_server::connection>::iterator conn) {
+
+    return [this, &in, in_message, &out, out_message, conn](fd_state state) {
+        set_active(conn);
+
+        if (state.is(fd_state::RDHUP)) {
+            log(conn, "CONNECT stopped");
+            close(conn);
+            return;
+        }
+
+        if (state.is(fd_state::IN) && in_message->can_read()) {
+            try {
+                in_message->read_from(in.get_fd());
+            } catch (annotated_exception const& e) {
+                log(conn, e.what());
+                close(conn);
+            }
+            if (!in_message->can_read()) {
+                in.update(in.get_state() ^ fd_state::IN);
+            }
+            if (in_message->can_write()) {
+                out.update(out.get_state() | fd_state::OUT);
+            }
+        }
+        if (state.is(fd_state::OUT) && out_message->can_write()) {
+            try {
+                out_message->write_to(in.get_fd());
+            } catch (annotated_exception const& e) {
+                log(conn, e.what());
+                close(conn);
+            }
+            if (!out_message->can_write()) {
+                in.update(in.get_state() ^ fd_state::OUT);
+            }
+            if (out_message->can_read()) {
+                out.update(out.get_state() | fd_state::IN);
+            }
+        }
+    };
+}
 
 epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip,
                                                                 on_resolve_t::iterator query) {
@@ -267,47 +338,42 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
             socklen_t size = sizeof(code);
             server.get_option(SO_ERROR, &code, &size);
 
-            annotated_exception e("connect", code);
-            switch (code) {
-                case ENETUNREACH:
-                case ECONNREFUSED: {
-                    if (!ip.has_ip()) {
-                        log(conn, "connection to " + ip.get_extra().host + ": no relevant ip, closing");
+            annotated_exception e(to_string(conn) + ": connect", code);
+            if (code == ENETUNREACH || code == ECONNREFUSED) {
+                if (!ip.has_ip()) {
+                    log(conn, "connection to " + ip.get_extra().host + ": no relevant ip, closing");
+                    on_resolve.erase(query);
+                    send_404(escape_client(conn));
+                    close(conn);
+                    return;
+                }
+                endpoint old_ip = ip.get_ip();
+                ip.next_ip();
+                log(conn, "connection to " + ip.get_extra().host + ": ip "
+                          + to_string(old_ip) + " isn't valid. Trying " + to_string(ip.get_ip()));
+                endpoint cur_ip = ip.get_ip();
+
+                try {
+                    server.connect(cur_ip);
+                } catch (annotated_exception const &e) {
+                    if (e.get_errno() != EINPROGRESS) {
+                        // bad error
+                        log(e);
+                        log(conn, "closing");
                         on_resolve.erase(query);
                         send_404(escape_client(conn));
                         close(conn);
                         return;
                     }
-                    endpoint old_ip = ip.get_ip();
-                    ip.next_ip();
-                    log(conn, "connection to " + ip.get_extra().host + ": ip "
-                              + to_string(old_ip) + " isn't valid. Trying " + to_string(ip.get_ip()));
-                    endpoint cur_ip = ip.get_ip();
-
-                    try {
-                        server.connect(cur_ip);
-                    } catch (annotated_exception const &e) {
-                        if (e.get_errno() != EINPROGRESS) {
-                            // bad error
-                            log(e);
-                            log(conn, "closing");
-                            on_resolve.erase(query);
-                            send_404(escape_client(conn));
-                            close(conn);
-                            return;
-                        }
-                    }
-                    return;
                 }
-                case EPIPE:
-                    log(e);
-                    log(conn, "closing");
-                    on_resolve.erase(query);
-                    send_404(escape_client(conn));
-                    close(conn);
-                    return;
+                return;
+            } else {
+                log(e);
+                on_resolve.erase(query);
+                send_404(escape_client(conn));
+                close(conn);
+                return;
             }
-            throw e;
         }
 
         if (state.is(fd_state::OUT)) {
@@ -353,22 +419,19 @@ void proxy_server::read(epoll_registration &from, buffered_message<T> message,
                         socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                         sock.get_option(SO_ERROR, &code, &size);
                         annotated_exception exception(to_string(iterator) + " read", code);
-                        switch (code) {
-                            case ECONNRESET:
-                            case EPIPE:
-                                log(exception);
-                                close(iterator);
-                                return;
-                        }
-                        if (code != 0) {
-                            throw exception;
-                        }
+
+                        log(exception);
+                        close(iterator);
                     }
 
                     if (state.is(fd_state::IN)) {
-
-                        s_message->read_from(fd);
-
+                        try {
+                            s_message->read_from(fd);
+                        } catch (annotated_exception const &e) {
+                            log(iterator, e.what());
+                            close(iterator);
+                            return;
+                        }
                         if (s_message->is_read()) {
                             from.update(fd_state::WAIT);
                             next(std::move(*s_message));
@@ -398,20 +461,18 @@ void proxy_server::send(epoll_registration &to, buffered_message<T> message,
                       socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                       sock.get_option(SO_ERROR, &code, &size);
                       annotated_exception exception(to_string(iterator) + " send", code);
-                      switch (code) {
-                          case ECONNRESET:
-                          case EPIPE:
-                              log(exception);
-                              close(iterator);
-                              return;
-                      }
-                      if (code != 0) {
-                          throw exception;
-                      }
+                      log(exception);
+                      close(iterator);
                   }
 
                   if (state.is(fd_state::OUT)) {
-                      s_message->write_to(fd);
+                      try {
+                          s_message->write_to(fd);
+                      } catch (annotated_exception const &e) {
+                          log(iterator, e.what());
+                          close(iterator);
+                          return;
+                      }
 
                       if (s_message->is_written()) {
                           to.update(fd_state::WAIT);
@@ -457,7 +518,7 @@ void proxy_server::send_404(sockets_t::iterator client) {
     response_header header(response_line(404, "Not Found"));
 
     server_response response(std::move(header), "");
-    send(client->second, std::move(response), client, [this, client](){
+    send(client->second, std::move(response), client, [this, client]() {
         close(client);
     });
 }
@@ -486,20 +547,18 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
                 socket_wrap const &sock = *static_cast<socket_wrap const *>(&server);
                 sock.get_option(SO_ERROR, &code, &size);
                 annotated_exception exception(to_string(conn) + " send", code);
-                switch (code) {
-                    case ECONNRESET:
-                    case EPIPE:
-                        log(exception);
-                        close(conn);
-                        return;
-                }
-                if (code != 0) {
-                    throw exception;
-                }
+                log(exception);
+                close(conn);
             }
 
             if (state.is(fd_state::IN)) {
-                resp->read_from(server);
+                try {
+                    resp->read_from(server);
+                } catch (annotated_exception const &e) {
+                    log(conn, e.what());
+                    close(conn);
+                    return;
+                }
 
                 if (resp->can_write()) {
                     conn->get_client_registration().update({fd_state::OUT, fd_state::RDHUP});
@@ -533,23 +592,20 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
                 socket_wrap const &sock = *static_cast<socket_wrap const *>(&fd);
                 sock.get_option(SO_ERROR, &code, &size);
                 annotated_exception exception(to_string(conn) + " send", code);
-                switch (code) {
-                    case ECONNRESET:
-                    case EPIPE:
-                        log(exception);
-                        close(conn);
-                        return;
-                }
-                if (code != 0) {
-                    throw exception;
-                }
+                log(exception);
+                close(conn);
             }
 
             if (state.is(fd_state::OUT) && resp->can_write()) {
-                resp->write_to(fd);
-
+                try {
+                    resp->write_to(fd);
+                } catch (annotated_exception const &e) {
+                    log(conn, e.what());
+                    close(conn);
+                    return;
+                }
                 if (!resp->can_write()) {
-                    conn->get_client_registration().update({fd_state::WAIT, fd_state::RDHUP});
+                    conn->get_client_registration().update(conn->get_client_registration().get_state() ^ fd_state::OUT);
                 }
             }
         });
@@ -669,7 +725,7 @@ client_request proxy_server::make_validate_request(request_header rqst, response
 
 proxy_server::connection::connection() : timeout(0), expires_in(0) { }
 
-proxy_server::connection::connection(epoll_registration&& client, epoll_registration&& server, size_t timeout,
+proxy_server::connection::connection(epoll_registration &&client, epoll_registration &&server, size_t timeout,
                                      size_t ticks) :
         timeout(timeout), expires_in(ticks + timeout), client(std::move(client)), server(std::move(server)) { }
 
@@ -709,7 +765,7 @@ std::string to_string(proxy_server::connection const &conn) {
 proxy_server::safe_registration::safe_registration() : epoll_registration(), timeout(0), expires_in(0) {
 }
 
-proxy_server::safe_registration::safe_registration(epoll_registration&& registration, size_t timeout, size_t ticks) :
+proxy_server::safe_registration::safe_registration(epoll_registration &&registration, size_t timeout, size_t ticks) :
         epoll_registration(std::move(registration)), timeout(timeout), expires_in(ticks + timeout) {
 }
 
@@ -734,3 +790,5 @@ void swap(proxy_server::safe_registration &first, proxy_server::safe_registratio
 std::string to_string(const proxy_server::safe_registration &reg) {
     return "client " + std::to_string(reg.get_fd().get());
 }
+
+

@@ -1,7 +1,5 @@
 #include "wraps.h"
 
-#include <sstream>
-
 file_descriptor::file_descriptor() :
         fd(0) {
 }
@@ -338,6 +336,14 @@ uint32_t fd_state::get() const {
     return fd_st;
 }
 
+fd_state operator^(fd_state first, fd_state second) {
+    return fd_state(first.get() ^ second.get());
+}
+
+fd_state operator|(fd_state first, fd_state second) {
+    return fd_state(first.get() | second.get());
+}
+
 uint32_t fd_state::value_of(std::initializer_list<state> st) {
     uint32_t res = 0;
     for (auto it = st.begin(); it != st.end(); it++) {
@@ -556,7 +562,5 @@ void swap(epoll_registration &first, epoll_registration &other) {
 
 
 std::string to_string(epoll_registration &er) {
-    std::stringstream ss;
-    ss << "registration " << er.fd.get();
-    return ss.str();
+    return "registration " + std::to_string(er.get_fd().get());
 }

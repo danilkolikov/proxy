@@ -35,7 +35,7 @@ private:
     // Connection between two epoll_registrations (with timeout)
     struct connection {
         connection();
-        connection(epoll_registration&& client, epoll_registration&& server,
+        connection(epoll_registration &&client, epoll_registration &&server,
                    size_t timeout, size_t ticks);
         connection(connection &&other) = default;
         connection &operator=(connection &&other) = default;
@@ -63,15 +63,15 @@ private:
         size_t expires_in;
 
         safe_registration();
-        safe_registration(epoll_registration&& registration, size_t timeout, size_t cur_ticks);
+        safe_registration(epoll_registration &&registration, size_t timeout, size_t cur_ticks);
         safe_registration(safe_registration &&other);
         safe_registration &operator=(safe_registration &&other);
 
-        friend std::string to_string(safe_registration const& reg);
+        friend std::string to_string(safe_registration const &reg);
     };
 
     friend void swap(safe_registration &first, safe_registration &second);
-    friend std::string to_string(safe_registration const& reg);
+    friend std::string to_string(safe_registration const &reg);
 
     // Types of used containers
     using cache_t = simple_cache<std::string, cached_message, MAX_CACHE_SIZE>;
@@ -82,7 +82,7 @@ private:
 
     // Actions used in connections handling
 
-    template <typename... Args>
+    template<typename... Args>
     using action_with = std::function<void(Args...)>;
 
     using action = action_with<>;
@@ -104,15 +104,15 @@ private:
     void connect_to_server(sockets_t::iterator sock, std::string host, action_with_connection next);
 
     // Read message and do "next"
-    template <typename T, typename C>
+    template<typename T, typename C>
     void read(epoll_registration &from, buffered_message<T> message, C iterator, action_with<buffered_message<T>> next);
 
     // Send message and do "next"
-    template <typename T, typename C>
+    template<typename T, typename C>
     void send(epoll_registration &to, buffered_message<T> message, C iterator, action next);
 
     // Send request, read response and do "next"
-    template <typename C>
+    template<typename C>
     void send_and_read(epoll_registration &to, client_request, C iterator, action_with_response next);
 
     // Read response and send it to client during reading
@@ -134,11 +134,19 @@ private:
     action reuse_connection(connections_t::iterator conn, std::string old_host);
     // Start validation or start transfer
     action_with_connection handle_client_request(client_request rqst);
+    // Start raw transfer
+    action handle_connect(connections_t::iterator conn);
     // Decide, can we send cached or should download response again
-    action_with_response handle_validation_response(connections_t::iterator conn, client_request rqst, server_response cached);
+    action_with_response handle_validation_response(connections_t::iterator conn, client_request rqst,
+                                                    server_response cached);
     // Connect to server
     epoll_wrap::handler_t make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip,
                                                       on_resolve_t::iterator query);
+    epoll_wrap::handler_t make_connect_transfer_handler(epoll_registration &in,
+                                                        std::shared_ptr<raw_message> in_message,
+                                                        epoll_registration &out,
+                                                        std::shared_ptr<raw_message> out_message,
+                                                        connections_t::iterator conn);
     // Keeping active sockets and connections
     sockets_t::iterator save_registration(epoll_registration registration, size_t socket_timeout);
     void close(sockets_t::iterator socket);

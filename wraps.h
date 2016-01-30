@@ -134,6 +134,8 @@ struct fd_state {
     bool is(fd_state st) const;
     uint32_t get() const;
 
+    friend fd_state operator^(fd_state first, fd_state second);
+    friend fd_state operator|(fd_state first, fd_state second);
     friend void swap(fd_state &first, fd_state &second);
     friend bool operator==(fd_state const &first, fd_state const &second);
 private:

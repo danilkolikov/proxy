@@ -13,10 +13,32 @@
 
 #include "wraps.h"
 #include "header_parser.h"
-#include "proxy_server.h"
+
+// Message with unlimited size and without HTTP header
+struct raw_message {
+    raw_message();
+    raw_message(raw_message const& other);
+    raw_message(raw_message&& other);
+
+    raw_message &operator=(raw_message other);
+
+    bool can_read() const;
+    bool can_write() const;
+
+    void read_from(file_descriptor const& fd);
+    void write_to(file_descriptor const& fd);
+
+    friend void swap(raw_message& first, raw_message& second);
+private:
+    static const size_t BUFFER_LENGTH = 8 * 1024;
+
+    size_t read_length, write_length;
+    char buffer[BUFFER_LENGTH];
+};
 
 using cached_message = std::vector<std::string>;
 
+// Message with HTTP header and fixed size
 template<typename T>
 struct buffered_message {
     using cache_t = std::vector<std::string>;
@@ -25,41 +47,29 @@ struct buffered_message {
     static const size_t BUFFER_LENGTH = 8 * 1024;   // Maximal length of request's header supported by web-browsers
 
     buffered_message();
-
     buffered_message(cached_message cache);
-
     buffered_message(T const &header, std::string const &body);
-
     buffered_message(buffered_message const &other);
-
     buffered_message(buffered_message &&other);
-
     buffered_message &operator=(buffered_message other);
 
     ~buffered_message() = default;
 
     bool is_header_read() const;
-
     bool can_read() const;
-
     bool can_write() const;
 
-
     bool is_read() const;
-
     bool is_written() const;
 
-    T get_header() const;
-
     void read_from(file_descriptor const &socket);
-
     void write_to(file_descriptor const &socket);
 
     cached_message get_cache() const;
+    T get_header() const;
 
     template<typename S>
     friend void swap(buffered_message<S> &first, buffered_message<S> &second);
-
 private:
     size_t header_length, body_length, read;
     size_t read_length, write_length;

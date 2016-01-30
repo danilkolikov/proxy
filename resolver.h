@@ -15,8 +15,8 @@
 #include <pthread.h>
 #include <atomic>
 #include <functional>
-#include "wraps.h"
 
+#include "wraps.h"
 #include "util.h"
 
 template<typename T>
