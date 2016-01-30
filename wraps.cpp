@@ -1,5 +1,7 @@
 #include "wraps.h"
 
+#include <sstream>
+
 file_descriptor::file_descriptor() :
         fd(0) {
 }
@@ -554,5 +556,7 @@ void swap(epoll_registration &first, epoll_registration &other) {
 
 
 std::string to_string(epoll_registration &er) {
-    return "registration " + er.fd.get();
+    std::stringstream ss;
+    ss << "registration " << er.fd.get();
+    return ss.str();
 }

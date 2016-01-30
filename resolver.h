@@ -106,7 +106,7 @@ private:
     static const size_t THREAD_COUNT = 4;
     static const size_t CACHE_SIZE = 500;
 
-    static void main_loop(std::reference_wrapper<resolver> ref);
+    void main_loop();
 
     struct in_query {
         std::string host;
@@ -209,7 +209,7 @@ resolver<T>::resolver() :  should_stop(false)  {
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
     for (size_t i = 0; i < THREAD_COUNT; i++) {
-        threads[i] = thread_wrap(resolver<T>::main_loop, std::ref(*this));
+        threads[i] = thread_wrap(&resolver<T>::main_loop, this);
     }
 
     // Don't ignore in main thread
@@ -289,28 +289,28 @@ typename resolver<T>::ips_t resolver<T>::resolve_ip(std::string host, std::strin
 }
 
 template<typename T>
-void resolver<T>::main_loop(std::reference_wrapper<resolver<T>> ref) {
+void resolver<T>::main_loop() {
     while (true) {
-        if (ref.get().should_stop) {
+        if (should_stop) {
             break;
         }
         {
-            std::unique_lock<std::mutex> lock(ref.get().in_mutex);
+            std::unique_lock<std::mutex> lock(in_mutex);
 
-            if (ref.get().in_queue.empty()) {
-                ref.get().cv.wait(lock);
+            if (in_queue.empty()) {
+                cv.wait(lock);
                 continue;
             }
         }
 
         in_query p{};
         {
-            std::lock_guard<std::mutex> lg(ref.get().in_mutex);
-            if (ref.get().in_queue.size() == 0) {
+            std::lock_guard<std::mutex> lg(in_mutex);
+            if (in_queue.size() == 0) {
                 continue;
             }
-            p = std::move(ref.get().in_queue.front());
-            ref.get().in_queue.pop();
+            p = std::move(in_queue.front());
+            in_queue.pop();
         }
 
         size_t pos = p.host.find(":");
@@ -323,11 +323,11 @@ void resolver<T>::main_loop(std::reference_wrapper<resolver<T>> ref) {
             port = p.host.substr(pos + 1);
         }
 
-        ips_t ips = ref.get().find_cached(host);
+        ips_t ips = find_cached(host);
 
         if (ips.empty()) {
             try {
-                ips = ref.get().resolve_ip(host, port);
+                ips = resolve_ip(host, port);
             } catch (annotated_exception const &e) {
                 log(e);
                 ips = ips_t();
@@ -338,8 +338,8 @@ void resolver<T>::main_loop(std::reference_wrapper<resolver<T>> ref) {
         resolved_ip<T> tmp(ips, htons(std::stoi(port)), std::move(p.extra));
 
         {
-            std::lock_guard<std::mutex> lg(ref.get().out_mutex);
-            ref.get().out_queue.push(std::move(tmp));
+            std::lock_guard<std::mutex> lg(out_mutex);
+            out_queue.push(std::move(tmp));
         }
         uint64_t u = 1;
         p.notifier->write(&u, sizeof(uint64_t));
