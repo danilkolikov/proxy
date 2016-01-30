@@ -507,7 +507,7 @@ void proxy_server::fast_transfer(connections_t::iterator conn, client_request rq
 
                 if (resp->is_read()) {
                     std::string url = to_url(s_rqst->get_header());
-                    if (sholud_cache(resp->get_header())) {
+                    if (should_cache(resp->get_header())) {
                         save_cached(url, resp->get_cache());
                         log(conn, "response from " + url + " saved to cache");
                     }
@@ -608,29 +608,22 @@ std::string proxy_server::to_url(request_header const &request) const {
 }
 
 void proxy_server::save_cached(std::string url, cached_message const &response) {
-    auto it = cache.find(url);
-    if (it == cache.end()) {
-        cache.insert({url, response});
-    }
+    cache.insert(std::move(url), response);
 }
 
 bool proxy_server::is_cached(request_header const &request) const {
-    auto it = cache.find(to_url(request));
-    return it != cache.end();
+    return cache.has(to_url(request));
 }
 
 cached_message proxy_server::get_cached(request_header const &request) const {
-    return cache.find(to_url(request))->second;
+    return cache.find(to_url(request));
 }
 
 void proxy_server::delete_cached(request_header const &request) {
-    auto it = cache.find(to_url(request));
-    if (it != cache.end()) {
-        cache.erase(it);
-    }
+    cache.erase(to_url(request));
 }
 
-bool proxy_server::sholud_cache(response_header const &header) const {
+bool proxy_server::should_cache(response_header const &header) const {
     if (header.has_property("cache-control")) {
         std::string value = to_lower(header.get_property("cache_control"));
         if (value.find("no-cache") != std::string::npos ||

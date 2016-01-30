@@ -30,6 +30,8 @@ struct proxy_server {
     proxy_server(epoll_wrap &epoll, resolver<resolver_extra> &resolver, uint16_t port, int queue_size);
 
 private:
+    static const size_t MAX_CACHE_SIZE = 20000;
+
     // Connection between two epoll_registrations (with timeout)
     struct connection {
         connection();
@@ -72,7 +74,7 @@ private:
     friend std::string to_string(safe_registration const& reg);
 
     // Types of used containers
-    using cache_t = std::map<std::string, cached_message>;
+    using cache_t = simple_cache<std::string, cached_message, MAX_CACHE_SIZE>;
     using sockets_t = std::map<int, safe_registration>;
     using connections_t = std::list<connection>;
     using resolver_t = resolver<resolver_extra>;
@@ -151,7 +153,7 @@ private:
     friend std::string to_string(connections_t::iterator const &iterator);
 
     // Caching
-    bool sholud_cache(response_header const &header) const;
+    bool should_cache(response_header const &header) const;
     client_request make_validate_request(request_header rqst, response_header response) const;
     std::string to_url(request_header const &request) const;
     void save_cached(std::string url, cached_message const &response);

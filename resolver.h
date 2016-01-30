@@ -97,7 +97,6 @@ struct resolver {
     resolver &operator=(resolver const &other) = delete;
     ~resolver();
 
-    void set_max_cache_size(size_t size);
     void stop();
 
     void resolve_host(std::string host, file_descriptor const &notifier, T extra);
@@ -105,6 +104,8 @@ struct resolver {
 
 private:
     static const size_t THREAD_COUNT = 4;
+    static const size_t CACHE_SIZE = 500;
+
     static void main_loop(std::reference_wrapper<resolver> ref);
 
     struct in_query {
@@ -114,7 +115,6 @@ private:
     };
 
     using ips_t = typename resolved_ip<T>::ips_t;
-    using cached_ip = std::pair<std::string, ips_t>;
 
     ips_t find_cached(std::string const &host);
     void cache_ip(std::string const &host, ips_t ips);
@@ -124,8 +124,7 @@ private:
     std::queue<in_query> in_queue;
     std::queue<resolved_ip<T>> out_queue;
 
-    size_t max_cache_size;
-    std::deque<cached_ip> cache;
+    simple_cache<std::string, ips_t, CACHE_SIZE> cache;
 
     std::atomic_bool should_stop;
     std::mutex in_mutex, out_mutex, cache_mutex;
@@ -202,7 +201,7 @@ T const &resolved_ip<T>::get_extra() const {
 
 
 template<typename T>
-resolver<T>::resolver() : max_cache_size(500), should_stop(false)  {
+resolver<T>::resolver() :  should_stop(false)  {
     // Ignoring signals from other threads
     sigset_t set;
     sigemptyset(&set);
@@ -230,11 +229,6 @@ void resolver<T>::stop() {
 }
 
 template<typename T>
-void resolver<T>::set_max_cache_size(size_t size) {
-    max_cache_size = size;
-}
-
-template<typename T>
 void resolver<T>::resolve_host(std::string host, file_descriptor const &notifier, T extra) {
     {
         std::lock_guard<std::mutex> lg(in_mutex);
@@ -257,10 +251,8 @@ resolved_ip<T> resolver<T>::get_ip() {
 template<typename T>
 typename resolver<T>::ips_t resolver<T>::find_cached(std::string const &host) {
     std::lock_guard<std::mutex> lg(cache_mutex);
-    for (auto it = cache.begin(); it != cache.end(); it++) {
-        if (it->first.compare(host) == 0) {
-            return it->second;
-        }
+    if (cache.has(host)) {
+        return cache.find(host);
     }
     return ips_t();
 }
@@ -268,10 +260,7 @@ typename resolver<T>::ips_t resolver<T>::find_cached(std::string const &host) {
 template<typename T>
 void resolver<T>::cache_ip(std::string const &host, typename resolver<T>::ips_t ip) {
     std::lock_guard<std::mutex> lg(cache_mutex);
-    cache.push_front({host, ip});
-    if (cache.size() > max_cache_size) {
-        cache.pop_back();
-    }
+    cache.insert(host, ip);
 }
 
 template<typename T>
@@ -295,6 +284,7 @@ typename resolver<T>::ips_t resolver<T>::resolve_ip(std::string host, std::strin
     }
     freeaddrinfo(addr);
     cache_ip(host, ips);
+    log("ip of " + host, "saved to cache");
     return ips;
 }
 
@@ -342,6 +332,8 @@ void resolver<T>::main_loop(std::reference_wrapper<resolver<T>> ref) {
                 log(e);
                 ips = ips_t();
             }
+        } else {
+            log("ip for " + p.host, "found in cache");
         }
         resolved_ip<T> tmp(ips, htons(std::stoi(port)), std::move(p.extra));
 
