@@ -340,6 +340,8 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
 
             annotated_exception e(to_string(conn) + ": connect", code);
             if (code == ENETUNREACH || code == ECONNREFUSED) {
+                endpoint old_ip = ip.get_ip();
+                ip.next_ip();
                 if (!ip.has_ip()) {
                     log(conn, "connection to " + ip.get_extra().host + ": no relevant ip, closing");
                     on_resolve.erase(query);
@@ -347,8 +349,6 @@ epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::i
                     close(conn);
                     return;
                 }
-                endpoint old_ip = ip.get_ip();
-                ip.next_ip();
                 log(conn, "connection to " + ip.get_extra().host + ": ip "
                           + to_string(old_ip) + " isn't valid. Trying " + to_string(ip.get_ip()));
                 endpoint cur_ip = ip.get_ip();

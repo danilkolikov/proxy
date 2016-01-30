@@ -284,7 +284,6 @@ typename resolver<T>::ips_t resolver<T>::resolve_ip(std::string host, std::strin
     }
     freeaddrinfo(addr);
     cache_ip(host, ips);
-    log("ip of " + host, "saved to cache");
     return ips;
 }
 
@@ -332,8 +331,6 @@ void resolver<T>::main_loop() {
                 log(e);
                 ips = ips_t();
             }
-        } else {
-            log("ip for " + p.host, "found in cache");
         }
         resolved_ip<T> tmp(ips, htons(std::stoi(port)), std::move(p.extra));
 

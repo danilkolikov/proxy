@@ -1,6 +1,6 @@
 # Proxy Server
 
-(Not so) Simple IPv4 proxy server
+(Not so) Simple HTTP/HTTPS proxy server
 
 * Written on C++ 11
 * Uses the power of lambda-functions
