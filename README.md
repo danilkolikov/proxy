@@ -1,20 +1,22 @@
 # Proxy Server
 
-(Not so) Simple HTTP/HTTPS proxy server
+HTTP/HTTPS proxy server with response caching
 
 * Written on C++ 11
 * Uses the power of lambda-functions
-* Handling connections in monadic style
 * Caches responses for quicker loading pages
 
 Contains:
 
-* wraps.cpp - wraps for linux file descriptors
+* wraps.h - wraps for linux file descriptors
 * resolver.h - multi-thread resolver for ip addresses
-* header_parser - simple parser for HTTP-headers
-* proxy_server - proxy server
+* header_parser.h - simple parser for HTTP-headers
+* proxy_server.h - proxy server
 
-How to launch:
-1. Build with make
-2. Launch with command proxy_server <PORT>
+How to build and use:
+
+1. Generate Makefile with cmake CMakeLists.txt
+2. Build with make
+3. Launch with command: proxy_server <PORT> . If no port is mentioned, server starts on port 8080
+
 
