@@ -17,6 +17,6 @@ How to build and use:
 
 1. Generate Makefile with cmake CMakeLists.txt
 2. Build with make
-3. Launch with command: proxy_server <PORT> . If no port is mentioned, server starts on port 8080
+3. Launch with command: proxy_server {PORT} . If no port is mentioned, server starts on port 8080
 
 
