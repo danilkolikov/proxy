@@ -14,3 +14,7 @@ Contains:
 * header_parser - simple parser for HTTP-headers
 * proxy_server - proxy server
 
+How to launch:
+1. Build with make
+2. Launch with command proxy_server <PORT>
+

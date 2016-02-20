@@ -14,11 +14,11 @@
 #include <map>
 #include <list>
 
-#include "wraps.h"
 #include "resolver.h"
-#include "buffered_message.h"
+#include "../util/wraps.h"
+#include "../util/buffered_message.h"
 
-// Monadic proxy server
+// Proxy server. It starts, when epoll it contains is started, and stops in destructor
 struct proxy_server {
     struct resolver_extra {
         int socket;
@@ -27,6 +27,8 @@ struct proxy_server {
 
     proxy_server() = delete;
 
+    // Creates proxy_server that uses <epoll> for polling, <resolver> for resolving IPs and
+    // can listen <queue_size> connections to <port>
     proxy_server(epoll_wrap &epoll, resolver<resolver_extra> &resolver, uint16_t port, int queue_size);
 
 private:
@@ -81,7 +83,6 @@ private:
     using resolved_ip_t = resolved_ip<resolver_extra>;
 
     // Actions used in connections handling
-
     template<typename... Args>
     using action_with = std::function<void(Args...)>;
 
@@ -140,8 +141,7 @@ private:
     action_with_response handle_validation_response(connections_t::iterator conn, client_request rqst,
                                                     server_response cached);
     // Connect to server
-    epoll_wrap::handler_t make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip,
-                                                      on_resolve_t::iterator query);
+    epoll_wrap::handler_t make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip);
     epoll_wrap::handler_t make_connect_transfer_handler(epoll_registration &in,
                                                         std::shared_ptr<raw_message> in_message,
                                                         epoll_registration &out,

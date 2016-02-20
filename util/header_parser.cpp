@@ -161,7 +161,7 @@ response_line::response_line(response_line const &other) :
         other.http) {
 }
 
-response_line::response_line(response_line &&other) {
+response_line::response_line(response_line &&other) : response_line() {
     swap(*this, other);
 }
 

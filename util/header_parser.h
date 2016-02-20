@@ -11,6 +11,7 @@
 #include <string>
 #include "util.h"
 
+// Struct that contains HTTP-header property (E.G. "Host: google.com")
 struct header_property {
 public:
     std::string name, value;
@@ -27,6 +28,7 @@ public:
     friend void swap(header_property &first, header_property &second);
 };
 
+// Template struct for http header. <Line> is for the first line of header (response_line or request_line)
 template<typename Line>
 struct http_header {
 public:
@@ -38,12 +40,14 @@ public:
 
     http_header<Line> &operator=(http_header<Line> other);
 
+    // Functions for work with properties
     std::string get_property(std::string name) const;
     int get_int(std::string name) const;
     bool has_property(std::string name) const;
     void set_property(std::string name, std::string value);
     void erase_property(std::string name);
 
+    // Functions for with first line of header
     void set_request_line(Line line);
     Line get_request_line() const;
     Line &get_request_line();

@@ -74,18 +74,22 @@ proxy_server::proxy_server(epoll_wrap &s_epoll, resolver_t &rt, uint16_t port, i
 
             connections_t::iterator conn_it = save_connection(std::move(conn));
 
+            resolver_extra ip_extra = ip.get_extra();
             conn_it->get_client_registration()
                     .update(fd_state::RDHUP,
-                            [this, it, conn_it](fd_state state) {
+                            [this, ip_extra, conn_it](fd_state state) {
                                 // If client disconnect while we haven't connected to server
                                 if (state.is(fd_state::RDHUP)) {
                                     log(conn_it, "client dropped connection");
-                                    on_resolve.erase(it);
+                                    auto it = on_resolve.find({ip_extra.socket, ip_extra.host});
+                                    if (it != on_resolve.end()) {
+                                        on_resolve.erase(it);
+                                    }
                                     close(conn_it);
                                 }
                             });
 
-            conn_it->get_server_registration().update(make_server_connect_handler(conn_it, ip, it));
+            conn_it->get_server_registration().update(make_server_connect_handler(conn_it, ip));
         }
     };
 
@@ -318,12 +322,12 @@ epoll_wrap::handler_t proxy_server::make_connect_transfer_handler(epoll_registra
     };
 }
 
-epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip,
-                                                                on_resolve_t::iterator query) {
-    return [this, conn, ip, query](fd_state state) mutable {
+epoll_wrap::handler_t proxy_server::make_server_connect_handler(connections_t::iterator conn, resolved_ip_t ip) {
+    return [this, conn, ip](fd_state state) mutable {
         socket_wrap const &server = conn->get_server();
         set_active(conn);
 
+        auto query = on_resolve.find({ip.get_extra().socket, ip.get_extra().host});
         if (state.is(fd_state::RDHUP)) {
             log(conn, "connection to " + ip.get_extra().host +
                       ": server " + std::to_string(server.get()) + "dropped connection");

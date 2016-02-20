@@ -15,6 +15,7 @@
 #include <exception>
 #include <map>
 
+// Class of exception that saves errno variable
 class annotated_exception : public std::exception {
 public:
     annotated_exception() noexcept;
@@ -31,6 +32,7 @@ private:
     int errnum;
 };
 
+// Simple LRU cache with logarithmic assymptotic
 template<typename K, typename V, size_t MAX_SIZE>
 struct simple_cache {
     simple_cache();
@@ -80,6 +82,7 @@ inline std::string to_string(char *message) {
     return std::string(message);
 }
 
+// Function for logging
 template<typename S, typename T>
 void log(S const &tag, T const &message) {
     using ::to_string;
@@ -89,6 +92,7 @@ void log(S const &tag, T const &message) {
 
 void log(annotated_exception const &e);
 
+// To lower case
 std::string to_lower(std::string str);
 
 template<typename K, typename V, size_t MAX_SIZE>

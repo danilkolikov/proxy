@@ -14,7 +14,7 @@
 #include "wraps.h"
 #include "header_parser.h"
 
-// Message with unlimited size and without HTTP header
+// Struct for messages with unlimited length and without HTTP headers
 struct raw_message {
     raw_message();
     raw_message(raw_message const& other);
@@ -22,9 +22,11 @@ struct raw_message {
 
     raw_message &operator=(raw_message other);
 
+    // Can we write or read in this message
     bool can_read() const;
     bool can_write() const;
 
+    // Read or Write
     void read_from(file_descriptor const& fd);
     void write_to(file_descriptor const& fd);
 
@@ -36,9 +38,10 @@ private:
     char buffer[BUFFER_LENGTH];
 };
 
+// Message, that is saved in cache of proxy server
 using cached_message = std::vector<std::string>;
 
-// Message with HTTP header and fixed size
+// Message with HTTP header and fixed size. It caches data that it contains
 template<typename T>
 struct buffered_message {
     using cache_t = std::vector<std::string>;
@@ -65,6 +68,7 @@ struct buffered_message {
     void read_from(file_descriptor const &socket);
     void write_to(file_descriptor const &socket);
 
+    // Get cache or cached header
     cached_message get_cache() const;
     T get_header() const;
 

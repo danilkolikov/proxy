@@ -24,6 +24,7 @@
 
 #include "util.h"
 
+// Wrap for unix file descriptor
 struct file_descriptor {
     explicit file_descriptor(int fd);
 
@@ -32,7 +33,10 @@ struct file_descriptor {
 
     virtual ~file_descriptor();
 
+    // Get number of file descriptor
     int get() const;
+
+    // Can we read from it
     int can_read() const;
     long read(void *message, size_t message_size) const;
     long write(void const *message, size_t message_size) const;
@@ -44,7 +48,7 @@ protected:
     int fd;
 };
 
-
+// Wrap for timer_fd
 struct timer_fd : file_descriptor {
     enum clock_mode {
         REALTIME, MONOTONIC
@@ -57,12 +61,14 @@ struct timer_fd : file_descriptor {
     timer_fd(clock_mode cmode, fd_mode mode);
     timer_fd(clock_mode cmode, std::initializer_list<fd_mode> mode);
 
+    // Set interval for ticking
     void set_interval(long interval_sec, long start_after_sec) const;
 
 private:
     int value_of(std::initializer_list<fd_mode> mode);
 };
 
+// Wrap for event_fd
 struct event_fd : file_descriptor {
     enum fd_mode {
         NONBLOCK, CLOEXEC, SEMAPHORE, SIMPLE
@@ -76,6 +82,7 @@ private:
     int value_of(std::initializer_list<fd_mode> mode);
 };
 
+// Wrap for signal_fd
 struct signal_fd : file_descriptor {
     enum fd_mode {
         NONBLOCK, CLOEXEC, SIMPLE
@@ -89,8 +96,16 @@ private:
     int value_of(std::initializer_list<fd_mode> mode);
 };
 
-struct endpoint;
+// IPv4 endpoint
+struct endpoint {
+    uint32_t ip;
+    uint16_t port;
 
+};
+void swap(endpoint &first, endpoint &second);
+std::string to_string(endpoint const &ep);
+
+// Wrap for socket
 struct socket_wrap : file_descriptor {
     enum socket_mode {
         NONBLOCK, CLOEXEC, SIMPLE
@@ -100,11 +115,20 @@ struct socket_wrap : file_descriptor {
     socket_wrap(std::initializer_list<socket_mode> mode);
     socket_wrap(socket_wrap &&other);
 
+    // Accept other socket
     socket_wrap accept(socket_mode mode) const;
     socket_wrap accept(std::initializer_list<socket_mode> mode) const;
+
+    // Bing to port
     void bind(uint16_t port) const;
+
+    // Connect to endpoint
     void connect(endpoint address) const;
+
+    // Listen to incoming connections
     void listen(int queue_size) const;
+
+    // Method that calls getsockopt
     void get_option(int name, void *res, socklen_t *res_len) const;
 
     friend std::string to_string(socket_wrap &wrap);
@@ -116,6 +140,7 @@ private:
     int value_of(std::initializer_list<socket_mode> modes) const;
 };
 
+// State of file descriptor in epoll
 struct fd_state {
     enum state {
         IN, OUT, WAIT, ERROR, HUP, RDHUP
@@ -136,6 +161,7 @@ struct fd_state {
 
     friend fd_state operator^(fd_state first, fd_state second);
     friend fd_state operator|(fd_state first, fd_state second);
+
     friend void swap(fd_state &first, fd_state &second);
     friend bool operator==(fd_state const &first, fd_state const &second);
 private:
@@ -144,18 +170,29 @@ private:
     uint32_t fd_st;
 };
 
+// Wrap for epoll. After state of file_descriptor becomes equal to state it was registered to,
+// handler is called with current fd_state
 struct epoll_wrap : file_descriptor {
     using handler_t = std::function<void(fd_state)>;
 
     epoll_wrap(int max_queue_size);
     epoll_wrap(epoll_wrap &&other);
 
+    // Register file descriptor in epoll
     void register_fd(const file_descriptor &fd, fd_state events);
     void register_fd(const file_descriptor &fd, fd_state events, handler_t handler);
+
+    // Unregister
     void unregister_fd(const file_descriptor &fd);
+
+    // Update state (and handler) of file descriptor
     void update_fd(const file_descriptor &fd, fd_state events);
     void update_fd_handler(const file_descriptor &fd, handler_t handler);
+
+    // Start epoll
     void start_wait();
+
+    // Say epoll that it should stop
     void stop_wait();
 
     friend void swap(epoll_wrap &first, epoll_wrap &second);
@@ -172,7 +209,7 @@ private:
 
 using shared_epoll = std::shared_ptr<epoll_wrap>;
 
-// RAII-struct for registration in epoll
+// RAII structure for registration in epoll. In constructor registers, in destructor unregisters
 struct epoll_registration {
     epoll_registration();
     epoll_registration(epoll_wrap &epoll, file_descriptor &&fd, fd_state state);
@@ -197,14 +234,5 @@ private:
     file_descriptor fd;
     fd_state events;
 };
-
-// IPv4 endpoint
-struct endpoint {
-    uint32_t ip;
-    uint16_t port;
-
-};
-void swap(endpoint &first, endpoint &second);
-std::string to_string(endpoint const &ep);
 
 #endif /* WRAPS_H_ */

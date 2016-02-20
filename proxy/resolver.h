@@ -16,8 +16,8 @@
 #include <atomic>
 #include <functional>
 
-#include "wraps.h"
-#include "util.h"
+#include "../util/wraps.h"
+#include "../util/util.h"
 
 template<typename T>
 struct resolved_ip;
@@ -28,7 +28,7 @@ void swap(resolved_ip<T> &first, resolved_ip<T> &second);
 template<typename T>
 struct resolver;
 
-// Extra passed with ips adress through resolver
+// Extra information passed with ips adress through resolver
 template<typename T>
 struct resolved_ip {
     using ips_t = std::deque<uint32_t>;
@@ -83,7 +83,9 @@ private:
     std::thread thread;
 };
 
-// Multi-thread (4 threads) resolver for ip adresses
+// Multi-thread (4 threads) resolver for ip adresses. After resolving, returns resolved IP with extra,
+// passed in resolve_host();
+
 template<typename T>
 struct resolver {
     friend struct resolved_ip<T>;
@@ -97,9 +99,12 @@ struct resolver {
     resolver &operator=(resolver const &other) = delete;
     ~resolver();
 
+    // Forcibly stop threads of resolver
     void stop();
 
+    // Resolve host and notify passed file_descriptor, that IP is resolved
     void resolve_host(std::string host, file_descriptor const &notifier, T extra);
+    // Get resolved IP with extra, passed in resolve_host
     resolved_ip<T> get_ip();
 
 private:
